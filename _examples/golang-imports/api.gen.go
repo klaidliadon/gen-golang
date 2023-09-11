@@ -99,7 +99,7 @@ type exampleAPIServer struct {
 	ExampleAPI
 }
 
-func NewExampleAPIServer(svc ExampleAPI) WebRPCServer {
+func NewExampleAPIServer(svc ExampleAPI) *exampleAPIServer {
 	return &exampleAPIServer{
 		ExampleAPI: svc,
 	}
@@ -153,9 +153,11 @@ func (s *exampleAPIServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *exampleAPIServer) servePingJSON(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	ctx = context.WithValue(ctx, MethodNameCtxKey, "Ping")
+
 	
 
-	ctx = context.WithValue(ctx, MethodNameCtxKey, "Ping")
+	
 
 	// Call service method implementation.
 	err := s.ExampleAPI.Ping(ctx)
@@ -170,9 +172,11 @@ func (s *exampleAPIServer) servePingJSON(ctx context.Context, w http.ResponseWri
 }
 
 func (s *exampleAPIServer) serveStatusJSON(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	ctx = context.WithValue(ctx, MethodNameCtxKey, "Status")
+
 	
 
-	ctx = context.WithValue(ctx, MethodNameCtxKey, "Status")
+	
 
 	// Call service method implementation.
 	ret0, err := s.ExampleAPI.Status(ctx)
@@ -196,9 +200,11 @@ func (s *exampleAPIServer) serveStatusJSON(ctx context.Context, w http.ResponseW
 }
 
 func (s *exampleAPIServer) serveGetUsersJSON(ctx context.Context, w http.ResponseWriter, r *http.Request) {
+	ctx = context.WithValue(ctx, MethodNameCtxKey, "GetUsers")
+
 	
 
-	ctx = context.WithValue(ctx, MethodNameCtxKey, "GetUsers")
+	
 
 	// Call service method implementation.
 	ret0, ret1, err := s.ExampleAPI.GetUsers(ctx)
