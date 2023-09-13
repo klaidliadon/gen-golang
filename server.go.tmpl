@@ -10,15 +10,18 @@
 
 {{if $opts.hooks -}}
 type Config struct {
-	BeforeMethod func(ctx context.Context) error
-	AfterMethod  func(ctx context.Context, err error)
+	BeforeMethod       func(ctx context.Context) error
+	AfterMethodSuccess func(ctx context.Context)
+	AfterMethodError   func(ctx context.Context, err WebRPCError) error
 }
 
-var defaultConfig = &Config{
-	BeforeMethod: func(ctx context.Context) error { return nil },
-	AfterMethod:  func(ctx context.Context, err error) {},
+var defaultConfig = Config{
+	BeforeMethod:       func(ctx context.Context) error { return nil },
+	AfterMethodSuccess: func(ctx context.Context) {},
+	AfterMethodError:   func(ctx context.Context, err WebRPCError) error { return err },
 }
-{{- end}}
+
+{{end}}
 
 {{- range .Services}}
 {{- $name := .Name -}}
@@ -31,14 +34,23 @@ type {{$serviceName}} struct {
 	http.Handler
 }
 
-func New{{ .Name | firstLetterToUpper }}Server(svc {{$typePrefix}}{{.Name}}, config *Config) *{{$serviceName}} {
-	if config == nil {
-		config = defaultConfig
+func New{{ .Name | firstLetterToUpper }}Server(svc {{$typePrefix}}{{.Name}}, cfg *Config) *{{$serviceName}} {
+	config := defaultConfig
+	if cfg != nil {
+		if cfg.BeforeMethod != nil {
+			config.BeforeMethod = cfg.BeforeMethod
+		}
+		if cfg.AfterMethodSuccess != nil {
+			config.AfterMethodSuccess = cfg.AfterMethodSuccess
+		}
+		if cfg.AfterMethodError != nil {
+			config.AfterMethodError = cfg.AfterMethodError
+		}
 	}
 
 	return &{{$serviceName}}{
 		{{.Name}}: svc,
-		Config: config,
+		Config: &config,
 	}
 }
 {{- else -}}
@@ -108,21 +120,17 @@ func (s *{{$serviceName}}) serve{{ .Name | firstLetterToUpper }}JSON(ctx context
 	ctx = context.WithValue(ctx, MethodNameCtxKey, "{{.Name}}")
 
 	{{if $opts.hooks -}}
-	err := s.BeforeMethod(ctx)
-	if err != nil {
+	if err := s.BeforeMethod(ctx); err != nil {
 		RespondWithError(w, err)
 		return
 	}
-
-	defer func() {
-		s.AfterMethod(ctx, err)
-	}()
 	{{- end}}
 
 	{{ if gt (len .Inputs) 0 -}}
 	reqBody, err := io.ReadAll(r.Body)
 	if err != nil {
-		RespondWithError(w, ErrorWithCause(ErrWebrpcBadRequest, fmt.Errorf("failed to read request data: %w", err)))
+		rpcErr := ErrorWithCause(ErrWebrpcBadRequest, fmt.Errorf("failed to read request data: %w", err))
+		RespondWithError(w, {{if $opts.hooks }}s.AfterMethodError(ctx, rpcErr){{else}}rpcErr{{end}})
 		return
 	}
 	defer r.Body.Close()
@@ -133,7 +141,8 @@ func (s *{{$serviceName}}) serve{{ .Name | firstLetterToUpper }}JSON(ctx context
 	{{- end}}
 	}{}
 	if err := json.Unmarshal(reqBody, &reqPayload); err != nil {
-		RespondWithError(w, ErrorWithCause(ErrWebrpcBadRequest, fmt.Errorf("failed to unmarshal request data: %w", err)))
+		rpcErr := ErrorWithCause(ErrWebrpcBadRequest, fmt.Errorf("failed to unmarshal request data: %w", err))
+		RespondWithError(w, {{if $opts.hooks }}s.AfterMethodError(ctx, rpcErr){{else}}rpcErr{{end}})
 		return
 	}
 	{{- end}}
@@ -141,7 +150,15 @@ func (s *{{$serviceName}}) serve{{ .Name | firstLetterToUpper }}JSON(ctx context
 	// Call service method implementation.
 	{{range $i, $output := .Outputs}}ret{{$i}}, {{end}}err {{if or (eq (len .Inputs) 0) (gt (len .Outputs) 0)}}:{{end}}= s.{{$name}}.{{.Name}}(ctx{{range $i, $_ := .Inputs}}, reqPayload.Arg{{$i}}{{end}})
 	if err != nil {
+		{{if $opts.hooks -}}
+		rpcErr, ok := err.(WebRPCError)
+		if !ok {
+			rpcErr = ErrorWithCause(ErrWebrpcEndpoint, err)
+		}
+		RespondWithError(w, s.AfterMethodError(ctx, rpcErr))
+		{{else -}}
 		RespondWithError(w, err)
+		{{- end}}
 		return
 	}
 
@@ -161,7 +178,8 @@ func (s *{{$serviceName}}) serve{{ .Name | firstLetterToUpper }}JSON(ctx context
 	respBody, err := json.Marshal(respPayload)
 	{{ end -}}
 	if err != nil {
-		RespondWithError(w, ErrorWithCause(ErrWebrpcBadResponse, fmt.Errorf("failed to marshal json response: %w", err)))
+		rpcErr := ErrorWithCause(ErrWebrpcBadResponse, fmt.Errorf("failed to marshal json response: %w", err))
+		RespondWithError(w, {{if $opts.hooks }}s.AfterMethodError(ctx, rpcErr){{else}}rpcErr{{end}})
 		return
 	}
 	{{- end}}
@@ -173,21 +191,25 @@ func (s *{{$serviceName}}) serve{{ .Name | firstLetterToUpper }}JSON(ctx context
 	w.Write(respBody)
 	{{- else }}
 	w.Write([]byte("{}"))
+	{{- end }}
+
+	{{- if $opts.hooks }}
+	s.AfterMethodSuccess(ctx)
 	{{- end}}
 }
 {{end}}
 {{end -}}
 
 func RespondWithError(w http.ResponseWriter, err error) {
-	rpcErr, ok := err.(WebRPCError)
-	if !ok {
+	var rpcErr WebRPCError
+	if !errors.As(err, &rpcErr) {
 		rpcErr = ErrorWithCause(ErrWebrpcEndpoint, err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(rpcErr.HTTPStatus)
 
-	respBody, _ := json.Marshal(rpcErr)
+	respBody, _ := json.Marshal(err)
 	w.Write(respBody)
 }
 
